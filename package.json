@@ -1,0 +1,16 @@
+{
+  "name": "orbital-trajectories",
+  "version": "1.0.0",
+  "description": "",
+  "main": "drag-rotate-component.js",
+  "scripts": {
+    "dev": "aframe-watcher",
+    "deploy": "surge -d odl-orbital-trajectories.surge.sh ."
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "devDependencies": {
+    "aframe-watcher": "^1.4.0"
+  }
+}

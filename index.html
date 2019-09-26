@@ -1,0 +1,96 @@
+<html>
+  <head>
+    <script src="https://aframe.io/releases/0.9.2/aframe.min.js"></script>
+    <script src="https://unpkg.com/aframe-orbit-controls@1.2.0/dist/aframe-orbit-controls.min.js"></script>
+    <script src="https://cdn.rawgit.com/matthewbryancurtis/aframe-star-system-component/db4f1030/index.js"></script>
+    <script src="https://cdn.jsdelivr.net/gh/donmccurdy/aframe-extras@v6.0.1/dist/aframe-extras.min.js"></script>
+    <script src="https://rawgit.com/protyze/aframe-curve-component/master/dist/aframe-curve-component.min.js"></script>
+    <script src="https://rawgit.com/protyze/aframe-alongpath-component/master/dist/aframe-alongpath-component.min.js"></script>
+  </head>
+  <body>
+    <a-scene
+      inspector="url: https://cdn.jsdelivr.net/gh/aframevr/aframe-inspector@master/dist/aframe-inspector.min.js"
+    >
+      <a-assets>
+        <a-asset-item
+          id="a-earth"
+          src="./assets/EARTH_withClouds.gltf"
+        ></a-asset-item>
+        <a-asset-item id="a-cannon" src="./assets/cannon.gltf"></a-asset-item>
+        <a-asset-item
+          id="a-cannonball"
+          src="./assets/CannonBall.gltf"
+        ></a-asset-item>
+      </a-assets>
+
+      <!-- Main Scene -->
+      <a-entity id="target">
+
+
+        <a-entity
+          id="earth"
+          gltf-model="#a-earth"
+          rotation="4.72 100 14.33"
+          scale="10 10 10"
+        ></a-entity>
+        <a-entity
+          id="cannon"
+          gltf-model="#a-cannon"
+          position="-0.20538 10.50536 0"
+          rotation="0 -90 0"
+          scale="0.3 0.3 0.3"
+          animation-mixer="clip:Cannon_barrel|Cannon_barrel|Cannon_barrelAction|Cannon_barrel|C;"
+        ></a-entity>
+        <a-entity
+          id="cannonball"
+          gltf-model="#a-cannonball"
+          position="-0.29547 10.43085 0"
+          rotation="0 -90 0"
+          scale="1 1 1"
+          alongpath="delay:0;curve:#cannon-curve;dur:15000;loop:true;resetonplay:false"
+        >
+          <a-entity
+            animation="property: ; to: 5 1.6 0; dur: 1500; easing: linear"
+          ></a-entity>
+          <!-- CannonBall Curve -->
+          <a-curve
+            id="cannon-curve"
+            position="0 0 0"
+            curve="closed:true"
+          >
+            <a-curve-point id="cannon-curve-point-1" position="0 10.28364 0" curve-point=""></a-curve-point>
+            <a-curve-point id="cannon-curve-point-2" position="-13 0 0" curve-point=""></a-curve-point>
+            <a-curve-point id="cannon-curve-point-3" position="0 -13 0" curve-point=""></a-curve-point>
+            <a-curve-point id="cannon-curve-point-4" position="13 0 0" curve-point=""></a-curve-point>
+          </a-curve>
+        </a-entity>
+      </a-entity>
+
+      <!-- Camera -->
+      <a-entity
+        camera
+        look-controls="enabled: false"
+        orbit-controls="target: 0 1.6 -0.5; minDistance: 0.5; maxDistance: 180; initialPosition: 0 15 20; enablePan: false;"
+      >
+        <!-- Light -->
+        <a-entity
+          id="light-spot"
+          position="0 0 26.14303"
+          light="color: #BBB; type: spot"
+          data-aframe-default-light=""
+          aframe-injected=""
+        ></a-entity>
+      </a-entity>
+
+      <a-entity
+        light="color: #BBB; type: ambient"
+        data-aframe-default-light=""
+        aframe-injected=""
+      ></a-entity>
+
+      <a-sky color="#333"></a-sky>
+      <a-entity star-system></a-entity>
+    </a-scene>
+    <script src="./drag-rotate-component.js"></script>
+  </body>
+</html>
