@@ -26,7 +26,6 @@
       <!-- Main Scene -->
       <a-entity id="target">
 
-
         <a-entity
           id="earth"
           gltf-model="#a-earth"
@@ -44,25 +43,11 @@
         <a-entity
           id="cannonball"
           gltf-model="#a-cannonball"
-          position="-0.29547 10.43085 0"
+          position="-2.17738 10.49644 0.01069"
           rotation="0 -90 0"
-          scale="1 1 1"
-          alongpath="delay:0;curve:#cannon-curve;dur:15000;loop:true;resetonplay:false"
+          scale="0.3 0.3 0.3"
+          animate-trajectory="speed: 2"
         >
-          <a-entity
-            animation="property: ; to: 5 1.6 0; dur: 1500; easing: linear"
-          ></a-entity>
-          <!-- CannonBall Curve -->
-          <a-curve
-            id="cannon-curve"
-            position="0 0 0"
-            curve="closed:true"
-          >
-            <a-curve-point id="cannon-curve-point-1" position="0 10.28364 0" curve-point=""></a-curve-point>
-            <a-curve-point id="cannon-curve-point-2" position="-13 0 0" curve-point=""></a-curve-point>
-            <a-curve-point id="cannon-curve-point-3" position="0 -13 0" curve-point=""></a-curve-point>
-            <a-curve-point id="cannon-curve-point-4" position="13 0 0" curve-point=""></a-curve-point>
-          </a-curve>
         </a-entity>
       </a-entity>
 
@@ -88,9 +73,10 @@
         aframe-injected=""
       ></a-entity>
 
-      <a-sky color="#333"></a-sky>
+      <a-sky color="#000"></a-sky>
       <a-entity star-system></a-entity>
     </a-scene>
-    <script src="./drag-rotate-component.js"></script>
+
+    <script src="./trajectory-component.js"></script>
   </body>
 </html>
