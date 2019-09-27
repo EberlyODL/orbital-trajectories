@@ -13,9 +13,9 @@ AFRAME.registerComponent('animate-trajectory',{
     this.t += this.data.time
     const speed = this.data.speed
     this.el.setAttribute('position', {
-      x: ((Math.cos(this.t) * -.1) * speed + currentPosition.x), //these to strings make it work
-      y: ((Math.sin(this.t) * -.1) * speed + currentPosition.y), //these to strings make it work
-      z: currentPosition.z
+      x: currentPosition.x, //these to strings make it work
+      y: ((Math.sin(this.t * (2*Math.PI) * -(1/3))) * speed + currentPosition.y), //these to strings make it work
+      z: ((Math.cos(this.t * (2*Math.PI) * (1/3))) * speed + currentPosition.z), //these to strings make it work
     })
   }
 

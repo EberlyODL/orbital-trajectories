@@ -4,29 +4,68 @@
     <script src="https://unpkg.com/aframe-orbit-controls@1.2.0/dist/aframe-orbit-controls.min.js"></script>
     <script src="https://cdn.rawgit.com/matthewbryancurtis/aframe-star-system-component/db4f1030/index.js"></script>
     <script src="https://cdn.jsdelivr.net/gh/donmccurdy/aframe-extras@v6.0.1/dist/aframe-extras.min.js"></script>
-    <script src="https://rawgit.com/protyze/aframe-curve-component/master/dist/aframe-curve-component.min.js"></script>
-    <script src="https://rawgit.com/protyze/aframe-alongpath-component/master/dist/aframe-alongpath-component.min.js"></script>
+    <!-- <script src="https://rawgit.com/protyze/aframe-curve-component/master/dist/aframe-curve-component.min.js"></script> -->
+    <!-- <script src="https://rawgit.com/protyze/aframe-alongpath-component/master/dist/aframe-alongpath-component.min.js"></script> -->
+    <script src="https://unpkg.com/aframe-gltf-part-component/dist/aframe-gltf-part-component.min.js"></script>
+    <script type="module" src="./app.js"></script>
   </head>
   <body>
-    <a-scene
-      inspector="url: https://cdn.jsdelivr.net/gh/aframevr/aframe-inspector@master/dist/aframe-inspector.min.js"
-    >
-      <a-assets>
-        <a-asset-item
-          id="a-earth"
-          src="./assets/EARTH_withClouds.gltf"
-        ></a-asset-item>
-        <a-asset-item id="a-cannon" src="./assets/cannon.gltf"></a-asset-item>
-        <a-asset-item
-          id="a-cannonball"
-          src="./assets/CannonBall.gltf"
-        ></a-asset-item>
-      </a-assets>
+    <div id="root">
+      <a-scene
+        inspector="url: https://cdn.jsdelivr.net/gh/aframevr/aframe-inspector@master/dist/aframe-inspector.min.js"
+        scale="4 4 4"
+        cursor="rayOrigin: mouse"
+      >
+        <a-assets>
+          <a-asset-item
+            id="a-earth"
+            src="./assets/EARTH_withClouds.gltf"
+          ></a-asset-item>
+          <a-asset-item id="a-cannon" src="./assets/cannon.gltf"></a-asset-item>
+          <a-asset-item
+            id="a-cannonball"
+            src="./assets/CannonBall.gltf"
+          ></a-asset-item>
+          <a-asset-item
+            id="a-scene"
+            src="./assets/CannonOnEarth.gltf"
+          ></a-asset-item>
+        </a-assets>
 
-      <!-- Main Scene -->
-      <a-entity id="target">
+        <!-- Main Scene -->
+        <a-entity id="target" rotation="0 -90 0">
+          <a-entity
+            id="Earth"
+            position=""
+            scale=""
+            gltf-model="#a-scene"
+            scene-controller
+          ></a-entity>
+          <a-entity
+            id="Base_Cannon"
+            position=""
+            scale="1.001 1.001 1.001"
+            gltf-part="src: #a-scene; part: Base_Cannon"
+            visible="false"
+            cannon
+          ></a-entity>
+          <a-entity
+            id="Cannon_barrel"
+            position=""
+            scale="1.001 1.001 1.001"
+            gltf-part="src: #a-scene; part: Cannon_barrel"
+            cannon
+            visible="false"
+          ></a-entity>
+          <a-entity
+            id="CannonBall"
+            position="0 0 -11.6357"
+            scale=""
+            gltf-part="src: #a-scene; part: CannonBall"
+            cannon-ball
+          ></a-entity>
 
-        <a-entity
+          <!-- <a-entity
           id="earth"
           gltf-model="#a-earth"
           rotation="4.72 100 14.33"
@@ -46,37 +85,31 @@
           position="-2.17738 10.49644 0.01069"
           rotation="0 -90 0"
           scale="0.3 0.3 0.3"
-          animate-trajectory="speed: 2"
+          animate-trajectory="speed: 10"
         >
+        </a-entity> -->
         </a-entity>
-      </a-entity>
 
-      <!-- Camera -->
-      <a-entity
-        camera
-        look-controls="enabled: false"
-        orbit-controls="target: 0 1.6 -0.5; minDistance: 0.5; maxDistance: 180; initialPosition: 0 15 20; enablePan: false;"
-      >
-        <!-- Light -->
+        <!-- Camera -->
         <a-entity
-          id="light-spot"
-          position="0 0 26.14303"
-          light="color: #BBB; type: spot"
+          camera
+          look-controls="enabled: false"
+          orbit-controls="target: 0 0 0; minDistance: 0.5; maxDistance: 180; initialPosition: 0 15 20; enablePan: false;"
+        >
+          <!-- Light -->
+          <a-entity id="light-spot" position="0 0 26.14303"></a-entity>
+        </a-entity>
+
+        <a-entity
+          light="color: #BBB; type: ambient"
           data-aframe-default-light=""
           aframe-injected=""
         ></a-entity>
-      </a-entity>
 
-      <a-entity
-        light="color: #BBB; type: ambient"
-        data-aframe-default-light=""
-        aframe-injected=""
-      ></a-entity>
+        <a-sky color="#000"></a-sky>
+        <a-entity star-system></a-entity>
+      </a-scene>
+    </div>
 
-      <a-sky color="#000"></a-sky>
-      <a-entity star-system></a-entity>
-    </a-scene>
-
-    <script src="./trajectory-component.js"></script>
   </body>
 </html>

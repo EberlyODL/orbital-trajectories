@@ -10,6 +10,9 @@
   "keywords": [],
   "author": "",
   "license": "ISC",
+  "dependencies": {
+    "mobx": "^5.13.0"
+  },
   "devDependencies": {
     "aframe-watcher": "^1.4.0"
   }
