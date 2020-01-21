@@ -73,7 +73,7 @@ function __spread() {
     return ar;
 }
 
-var OBFUSCATED_ERROR = "An invariant failed, however the error is obfuscated because this is an production build.";
+var OBFUSCATED_ERROR = "An invariant failed, however the error is obfuscated because this is a production build.";
 var EMPTY_ARRAY = [];
 Object.freeze(EMPTY_ARRAY);
 var EMPTY_OBJECT = {};
@@ -281,13 +281,17 @@ function identityComparer(a, b) {
 function structuralComparer(a, b) {
     return deepEqual(a, b);
 }
+function shallowComparer(a, b) {
+    return deepEqual(a, b, 1);
+}
 function defaultComparer(a, b) {
     return Object.is(a, b);
 }
 var comparer = {
     identity: identityComparer,
     structural: structuralComparer,
-    default: defaultComparer
+    default: defaultComparer,
+    shallow: shallowComparer
 };
 
 var mobxDidRunLazyInitializersSymbol = Symbol("mobx did run lazy initializers");
@@ -311,14 +315,27 @@ function createPropertyInitializerDescriptor(prop, enumerable) {
         }));
 }
 function initializeInstance(target) {
+    var e_1, _a;
     if (target[mobxDidRunLazyInitializersSymbol] === true)
         return;
     var decorators = target[mobxPendingDecorators];
     if (decorators) {
         addHiddenProp(target, mobxDidRunLazyInitializersSymbol, true);
-        for (var key in decorators) {
-            var d = decorators[key];
-            d.propertyCreator(target, d.prop, d.descriptor, d.decoratorTarget, d.decoratorArguments);
+        // Build property key array from both strings and symbols
+        var keys = __spread(Object.getOwnPropertySymbols(decorators), Object.keys(decorators));
+        try {
+            for (var keys_1 = __values(keys), keys_1_1 = keys_1.next(); !keys_1_1.done; keys_1_1 = keys_1.next()) {
+                var key = keys_1_1.value;
+                var d = decorators[key];
+                d.propertyCreator(target, d.prop, d.descriptor, d.decoratorTarget, d.decoratorArguments);
+            }
+        }
+        catch (e_1_1) { e_1 = { error: e_1_1 }; }
+        finally {
+            try {
+                if (keys_1_1 && !keys_1_1.done && (_a = keys_1.return)) _a.call(keys_1);
+            }
+            finally { if (e_1) throw e_1.error; }
         }
     }
 }
@@ -361,7 +378,8 @@ function createPropDecorator(propertyInitiallyEnumerable, propertyCreator) {
     };
 }
 function quacksLikeADecorator(args) {
-    return (((args.length === 2 || args.length === 3) && typeof args[1] === "string") ||
+    return (((args.length === 2 || args.length === 3) &&
+        (typeof args[1] === "string" || typeof args[1] === "symbol")) ||
         (args.length === 4 && args[3] === true));
 }
 
@@ -478,7 +496,7 @@ function getEnhancerFromOptions(options) {
  */
 function createObservable(v, arg2, arg3) {
     // @observable someProp;
-    if (typeof arguments[1] === "string") {
+    if (typeof arguments[1] === "string" || typeof arguments[1] === "symbol") {
         return deepDecorator.apply(null, arguments);
     }
     // it is an observable already, done
@@ -591,6 +609,282 @@ var computed = function computed(arg1, arg2, arg3) {
 };
 computed.struct = computedStructDecorator;
 
+var IDerivationState;
+(function (IDerivationState) {
+    // before being run or (outside batch and not being observed)
+    // at this point derivation is not holding any data about dependency tree
+    IDerivationState[IDerivationState["NOT_TRACKING"] = -1] = "NOT_TRACKING";
+    // no shallow dependency changed since last computation
+    // won't recalculate derivation
+    // this is what makes mobx fast
+    IDerivationState[IDerivationState["UP_TO_DATE"] = 0] = "UP_TO_DATE";
+    // some deep dependency changed, but don't know if shallow dependency changed
+    // will require to check first if UP_TO_DATE or POSSIBLY_STALE
+    // currently only ComputedValue will propagate POSSIBLY_STALE
+    //
+    // having this state is second big optimization:
+    // don't have to recompute on every dependency change, but only when it's needed
+    IDerivationState[IDerivationState["POSSIBLY_STALE"] = 1] = "POSSIBLY_STALE";
+    // A shallow dependency has changed since last computation and the derivation
+    // will need to recompute when it's needed next.
+    IDerivationState[IDerivationState["STALE"] = 2] = "STALE";
+})(IDerivationState || (IDerivationState = {}));
+var TraceMode;
+(function (TraceMode) {
+    TraceMode[TraceMode["NONE"] = 0] = "NONE";
+    TraceMode[TraceMode["LOG"] = 1] = "LOG";
+    TraceMode[TraceMode["BREAK"] = 2] = "BREAK";
+})(TraceMode || (TraceMode = {}));
+var CaughtException = /** @class */ (function () {
+    function CaughtException(cause) {
+        this.cause = cause;
+        // Empty
+    }
+    return CaughtException;
+}());
+function isCaughtException(e) {
+    return e instanceof CaughtException;
+}
+/**
+ * Finds out whether any dependency of the derivation has actually changed.
+ * If dependenciesState is 1 then it will recalculate dependencies,
+ * if any dependency changed it will propagate it by changing dependenciesState to 2.
+ *
+ * By iterating over the dependencies in the same order that they were reported and
+ * stopping on the first change, all the recalculations are only called for ComputedValues
+ * that will be tracked by derivation. That is because we assume that if the first x
+ * dependencies of the derivation doesn't change then the derivation should run the same way
+ * up until accessing x-th dependency.
+ */
+function shouldCompute(derivation) {
+    switch (derivation.dependenciesState) {
+        case IDerivationState.UP_TO_DATE:
+            return false;
+        case IDerivationState.NOT_TRACKING:
+        case IDerivationState.STALE:
+            return true;
+        case IDerivationState.POSSIBLY_STALE: {
+            // state propagation can occur outside of action/reactive context #2195
+            var prevAllowStateReads = allowStateReadsStart(true);
+            var prevUntracked = untrackedStart(); // no need for those computeds to be reported, they will be picked up in trackDerivedFunction.
+            var obs = derivation.observing, l = obs.length;
+            for (var i = 0; i < l; i++) {
+                var obj = obs[i];
+                if (isComputedValue(obj)) {
+                    if (globalState.disableErrorBoundaries) {
+                        obj.get();
+                    }
+                    else {
+                        try {
+                            obj.get();
+                        }
+                        catch (e) {
+                            // we are not interested in the value *or* exception at this moment, but if there is one, notify all
+                            untrackedEnd(prevUntracked);
+                            allowStateReadsEnd(prevAllowStateReads);
+                            return true;
+                        }
+                    }
+                    // if ComputedValue `obj` actually changed it will be computed and propagated to its observers.
+                    // and `derivation` is an observer of `obj`
+                    // invariantShouldCompute(derivation)
+                    if (derivation.dependenciesState === IDerivationState.STALE) {
+                        untrackedEnd(prevUntracked);
+                        allowStateReadsEnd(prevAllowStateReads);
+                        return true;
+                    }
+                }
+            }
+            changeDependenciesStateTo0(derivation);
+            untrackedEnd(prevUntracked);
+            allowStateReadsEnd(prevAllowStateReads);
+            return false;
+        }
+    }
+}
+// function invariantShouldCompute(derivation: IDerivation) {
+//     const newDepState = (derivation as any).dependenciesState
+//     if (
+//         "development" === "production" &&
+//         (newDepState === IDerivationState.POSSIBLY_STALE ||
+//             newDepState === IDerivationState.NOT_TRACKING)
+//     )
+//         fail("Illegal dependency state")
+// }
+function isComputingDerivation() {
+    return globalState.trackingDerivation !== null; // filter out actions inside computations
+}
+function checkIfStateModificationsAreAllowed(atom) {
+    var hasObservers = atom.observers.size > 0;
+    // Should never be possible to change an observed observable from inside computed, see #798
+    if (globalState.computationDepth > 0 && hasObservers)
+        fail(
+            "Computed values are not allowed to cause side effects by changing observables that are already being observed. Tried to modify: " + atom.name);
+    // Should not be possible to change observed state outside strict mode, except during initialization, see #563
+    if (!globalState.allowStateChanges && (hasObservers || globalState.enforceActions === "strict"))
+        fail(
+            (globalState.enforceActions
+                ? "Since strict-mode is enabled, changing observed observable values outside actions is not allowed. Please wrap the code in an `action` if this change is intended. Tried to modify: "
+                : "Side effects like changing state are not allowed at this point. Are you trying to modify state from, for example, the render function of a React component? Tried to modify: ") +
+                atom.name);
+}
+function checkIfStateReadsAreAllowed(observable) {
+    if (
+        !globalState.allowStateReads &&
+        globalState.observableRequiresReaction) {
+        console.warn("[mobx] Observable " + observable.name + " being read outside a reactive context");
+    }
+}
+/**
+ * Executes the provided function `f` and tracks which observables are being accessed.
+ * The tracking information is stored on the `derivation` object and the derivation is registered
+ * as observer of any of the accessed observables.
+ */
+function trackDerivedFunction(derivation, f, context) {
+    var prevAllowStateReads = allowStateReadsStart(true);
+    // pre allocate array allocation + room for variation in deps
+    // array will be trimmed by bindDependencies
+    changeDependenciesStateTo0(derivation);
+    derivation.newObserving = new Array(derivation.observing.length + 100);
+    derivation.unboundDepsCount = 0;
+    derivation.runId = ++globalState.runId;
+    var prevTracking = globalState.trackingDerivation;
+    globalState.trackingDerivation = derivation;
+    var result;
+    if (globalState.disableErrorBoundaries === true) {
+        result = f.call(context);
+    }
+    else {
+        try {
+            result = f.call(context);
+        }
+        catch (e) {
+            result = new CaughtException(e);
+        }
+    }
+    globalState.trackingDerivation = prevTracking;
+    bindDependencies(derivation);
+    warnAboutDerivationWithoutDependencies(derivation);
+    allowStateReadsEnd(prevAllowStateReads);
+    return result;
+}
+function warnAboutDerivationWithoutDependencies(derivation) {
+    if (derivation.observing.length !== 0)
+        return;
+    if (globalState.reactionRequiresObservable || derivation.requiresObservable) {
+        console.warn("[mobx] Derivation " + derivation.name + " is created/updated without reading any observable value");
+    }
+}
+/**
+ * diffs newObserving with observing.
+ * update observing to be newObserving with unique observables
+ * notify observers that become observed/unobserved
+ */
+function bindDependencies(derivation) {
+    // invariant(derivation.dependenciesState !== IDerivationState.NOT_TRACKING, "INTERNAL ERROR bindDependencies expects derivation.dependenciesState !== -1");
+    var prevObserving = derivation.observing;
+    var observing = (derivation.observing = derivation.newObserving);
+    var lowestNewObservingDerivationState = IDerivationState.UP_TO_DATE;
+    // Go through all new observables and check diffValue: (this list can contain duplicates):
+    //   0: first occurrence, change to 1 and keep it
+    //   1: extra occurrence, drop it
+    var i0 = 0, l = derivation.unboundDepsCount;
+    for (var i = 0; i < l; i++) {
+        var dep = observing[i];
+        if (dep.diffValue === 0) {
+            dep.diffValue = 1;
+            if (i0 !== i)
+                observing[i0] = dep;
+            i0++;
+        }
+        // Upcast is 'safe' here, because if dep is IObservable, `dependenciesState` will be undefined,
+        // not hitting the condition
+        if (dep.dependenciesState > lowestNewObservingDerivationState) {
+            lowestNewObservingDerivationState = dep.dependenciesState;
+        }
+    }
+    observing.length = i0;
+    derivation.newObserving = null; // newObserving shouldn't be needed outside tracking (statement moved down to work around FF bug, see #614)
+    // Go through all old observables and check diffValue: (it is unique after last bindDependencies)
+    //   0: it's not in new observables, unobserve it
+    //   1: it keeps being observed, don't want to notify it. change to 0
+    l = prevObserving.length;
+    while (l--) {
+        var dep = prevObserving[l];
+        if (dep.diffValue === 0) {
+            removeObserver(dep, derivation);
+        }
+        dep.diffValue = 0;
+    }
+    // Go through all new observables and check diffValue: (now it should be unique)
+    //   0: it was set to 0 in last loop. don't need to do anything.
+    //   1: it wasn't observed, let's observe it. set back to 0
+    while (i0--) {
+        var dep = observing[i0];
+        if (dep.diffValue === 1) {
+            dep.diffValue = 0;
+            addObserver(dep, derivation);
+        }
+    }
+    // Some new observed derivations may become stale during this derivation computation
+    // so they have had no chance to propagate staleness (#916)
+    if (lowestNewObservingDerivationState !== IDerivationState.UP_TO_DATE) {
+        derivation.dependenciesState = lowestNewObservingDerivationState;
+        derivation.onBecomeStale();
+    }
+}
+function clearObserving(derivation) {
+    // invariant(globalState.inBatch > 0, "INTERNAL ERROR clearObserving should be called only inside batch");
+    var obs = derivation.observing;
+    derivation.observing = [];
+    var i = obs.length;
+    while (i--)
+        removeObserver(obs[i], derivation);
+    derivation.dependenciesState = IDerivationState.NOT_TRACKING;
+}
+function untracked(action) {
+    var prev = untrackedStart();
+    try {
+        return action();
+    }
+    finally {
+        untrackedEnd(prev);
+    }
+}
+function untrackedStart() {
+    var prev = globalState.trackingDerivation;
+    globalState.trackingDerivation = null;
+    return prev;
+}
+function untrackedEnd(prev) {
+    globalState.trackingDerivation = prev;
+}
+function allowStateReadsStart(allowStateReads) {
+    var prev = globalState.allowStateReads;
+    globalState.allowStateReads = allowStateReads;
+    return prev;
+}
+function allowStateReadsEnd(prev) {
+    globalState.allowStateReads = prev;
+}
+/**
+ * needed to keep `lowestObserverState` correct. when changing from (2 or 1) to 0
+ *
+ */
+function changeDependenciesStateTo0(derivation) {
+    if (derivation.dependenciesState === IDerivationState.UP_TO_DATE)
+        return;
+    derivation.dependenciesState = IDerivationState.UP_TO_DATE;
+    var obs = derivation.observing;
+    var i = obs.length;
+    while (i--)
+        obs[i].lowestObserverState = IDerivationState.UP_TO_DATE;
+}
+
+// we don't use globalState for these in order to avoid possible issues with multiple
+// mobx versions
+var currentActionId = 0;
+var nextActionId = 1;
 function createAction(actionName, fn, ref) {
     {
         invariant(typeof fn === "function", "`action` can only be invoked on functions");
@@ -604,25 +898,19 @@ function createAction(actionName, fn, ref) {
     return res;
 }
 function executeAction(actionName, fn, scope, args) {
-    var runInfo = startAction(actionName, fn, scope, args);
-    var shouldSupressReactionError = true;
+    var runInfo = _startAction(actionName, scope, args);
     try {
-        var res = fn.apply(scope, args);
-        shouldSupressReactionError = false;
-        return res;
+        return fn.apply(scope, args);
+    }
+    catch (err) {
+        runInfo.error = err;
+        throw err;
     }
     finally {
-        if (shouldSupressReactionError) {
-            globalState.suppressReactionErrors = shouldSupressReactionError;
-            endAction(runInfo);
-            globalState.suppressReactionErrors = false;
-        }
-        else {
-            endAction(runInfo);
-        }
+        _endAction(runInfo);
     }
 }
-function startAction(actionName, fn, scope, args) {
+function _startAction(actionName, scope, args) {
     var notifySpy = isSpyEnabled() && !!actionName;
     var startTime = 0;
     if (notifySpy && "development" !== "production") {
@@ -642,19 +930,35 @@ function startAction(actionName, fn, scope, args) {
     var prevDerivation = untrackedStart();
     startBatch();
     var prevAllowStateChanges = allowStateChangesStart(true);
-    return {
+    var prevAllowStateReads = allowStateReadsStart(true);
+    var runInfo = {
         prevDerivation: prevDerivation,
         prevAllowStateChanges: prevAllowStateChanges,
+        prevAllowStateReads: prevAllowStateReads,
         notifySpy: notifySpy,
-        startTime: startTime
+        startTime: startTime,
+        actionId: nextActionId++,
+        parentActionId: currentActionId
     };
+    currentActionId = runInfo.actionId;
+    return runInfo;
 }
-function endAction(runInfo) {
+function _endAction(runInfo) {
+    if (currentActionId !== runInfo.actionId) {
+        fail("invalid action stack. did you forget to finish an action?");
+    }
+    currentActionId = runInfo.parentActionId;
+    if (runInfo.error !== undefined) {
+        globalState.suppressReactionErrors = true;
+    }
     allowStateChangesEnd(runInfo.prevAllowStateChanges);
+    allowStateReadsEnd(runInfo.prevAllowStateReads);
     endBatch();
     untrackedEnd(runInfo.prevDerivation);
-    if (runInfo.notifySpy && "development" !== "production")
+    if (runInfo.notifySpy && "development" !== "production") {
         spyReportEnd({ time: Date.now() - runInfo.startTime });
+    }
+    globalState.suppressReactionErrors = false;
 }
 function allowStateChanges(allowStateChanges, func) {
     var prev = allowStateChangesStart(allowStateChanges);
@@ -840,8 +1144,7 @@ var ComputedValue = /** @class */ (function () {
         this.isComputing = false; // to check for cycles
         this.isRunningSetter = false;
         this.isTracing = TraceMode.NONE;
-        if ( !options.get)
-            throw "[mobx] missing option for computed: get";
+        invariant(options.get, "missing option for computed: get");
         this.derivation = options.get;
         this.name = options.name || "ComputedValue@" + getNextId();
         if (options.set)
@@ -1013,248 +1316,6 @@ var ComputedValue = /** @class */ (function () {
 }());
 var isComputedValue = createInstanceofPredicate("ComputedValue", ComputedValue);
 
-var IDerivationState;
-(function (IDerivationState) {
-    // before being run or (outside batch and not being observed)
-    // at this point derivation is not holding any data about dependency tree
-    IDerivationState[IDerivationState["NOT_TRACKING"] = -1] = "NOT_TRACKING";
-    // no shallow dependency changed since last computation
-    // won't recalculate derivation
-    // this is what makes mobx fast
-    IDerivationState[IDerivationState["UP_TO_DATE"] = 0] = "UP_TO_DATE";
-    // some deep dependency changed, but don't know if shallow dependency changed
-    // will require to check first if UP_TO_DATE or POSSIBLY_STALE
-    // currently only ComputedValue will propagate POSSIBLY_STALE
-    //
-    // having this state is second big optimization:
-    // don't have to recompute on every dependency change, but only when it's needed
-    IDerivationState[IDerivationState["POSSIBLY_STALE"] = 1] = "POSSIBLY_STALE";
-    // A shallow dependency has changed since last computation and the derivation
-    // will need to recompute when it's needed next.
-    IDerivationState[IDerivationState["STALE"] = 2] = "STALE";
-})(IDerivationState || (IDerivationState = {}));
-var TraceMode;
-(function (TraceMode) {
-    TraceMode[TraceMode["NONE"] = 0] = "NONE";
-    TraceMode[TraceMode["LOG"] = 1] = "LOG";
-    TraceMode[TraceMode["BREAK"] = 2] = "BREAK";
-})(TraceMode || (TraceMode = {}));
-var CaughtException = /** @class */ (function () {
-    function CaughtException(cause) {
-        this.cause = cause;
-        // Empty
-    }
-    return CaughtException;
-}());
-function isCaughtException(e) {
-    return e instanceof CaughtException;
-}
-/**
- * Finds out whether any dependency of the derivation has actually changed.
- * If dependenciesState is 1 then it will recalculate dependencies,
- * if any dependency changed it will propagate it by changing dependenciesState to 2.
- *
- * By iterating over the dependencies in the same order that they were reported and
- * stopping on the first change, all the recalculations are only called for ComputedValues
- * that will be tracked by derivation. That is because we assume that if the first x
- * dependencies of the derivation doesn't change then the derivation should run the same way
- * up until accessing x-th dependency.
- */
-function shouldCompute(derivation) {
-    switch (derivation.dependenciesState) {
-        case IDerivationState.UP_TO_DATE:
-            return false;
-        case IDerivationState.NOT_TRACKING:
-        case IDerivationState.STALE:
-            return true;
-        case IDerivationState.POSSIBLY_STALE: {
-            var prevUntracked = untrackedStart(); // no need for those computeds to be reported, they will be picked up in trackDerivedFunction.
-            var obs = derivation.observing, l = obs.length;
-            for (var i = 0; i < l; i++) {
-                var obj = obs[i];
-                if (isComputedValue(obj)) {
-                    if (globalState.disableErrorBoundaries) {
-                        obj.get();
-                    }
-                    else {
-                        try {
-                            obj.get();
-                        }
-                        catch (e) {
-                            // we are not interested in the value *or* exception at this moment, but if there is one, notify all
-                            untrackedEnd(prevUntracked);
-                            return true;
-                        }
-                    }
-                    // if ComputedValue `obj` actually changed it will be computed and propagated to its observers.
-                    // and `derivation` is an observer of `obj`
-                    // invariantShouldCompute(derivation)
-                    if (derivation.dependenciesState === IDerivationState.STALE) {
-                        untrackedEnd(prevUntracked);
-                        return true;
-                    }
-                }
-            }
-            changeDependenciesStateTo0(derivation);
-            untrackedEnd(prevUntracked);
-            return false;
-        }
-    }
-}
-// function invariantShouldCompute(derivation: IDerivation) {
-//     const newDepState = (derivation as any).dependenciesState
-//     if (
-//         "development" === "production" &&
-//         (newDepState === IDerivationState.POSSIBLY_STALE ||
-//             newDepState === IDerivationState.NOT_TRACKING)
-//     )
-//         fail("Illegal dependency state")
-// }
-function isComputingDerivation() {
-    return globalState.trackingDerivation !== null; // filter out actions inside computations
-}
-function checkIfStateModificationsAreAllowed(atom) {
-    var hasObservers = atom.observers.size > 0;
-    // Should never be possible to change an observed observable from inside computed, see #798
-    if (globalState.computationDepth > 0 && hasObservers)
-        fail(
-            "Computed values are not allowed to cause side effects by changing observables that are already being observed. Tried to modify: " + atom.name);
-    // Should not be possible to change observed state outside strict mode, except during initialization, see #563
-    if (!globalState.allowStateChanges && (hasObservers || globalState.enforceActions === "strict"))
-        fail(
-            (globalState.enforceActions
-                ? "Since strict-mode is enabled, changing observed observable values outside actions is not allowed. Please wrap the code in an `action` if this change is intended. Tried to modify: "
-                : "Side effects like changing state are not allowed at this point. Are you trying to modify state from, for example, the render function of a React component? Tried to modify: ") +
-                atom.name);
-}
-/**
- * Executes the provided function `f` and tracks which observables are being accessed.
- * The tracking information is stored on the `derivation` object and the derivation is registered
- * as observer of any of the accessed observables.
- */
-function trackDerivedFunction(derivation, f, context) {
-    // pre allocate array allocation + room for variation in deps
-    // array will be trimmed by bindDependencies
-    changeDependenciesStateTo0(derivation);
-    derivation.newObserving = new Array(derivation.observing.length + 100);
-    derivation.unboundDepsCount = 0;
-    derivation.runId = ++globalState.runId;
-    var prevTracking = globalState.trackingDerivation;
-    globalState.trackingDerivation = derivation;
-    var result;
-    if (globalState.disableErrorBoundaries === true) {
-        result = f.call(context);
-    }
-    else {
-        try {
-            result = f.call(context);
-        }
-        catch (e) {
-            result = new CaughtException(e);
-        }
-    }
-    globalState.trackingDerivation = prevTracking;
-    bindDependencies(derivation);
-    return result;
-}
-/**
- * diffs newObserving with observing.
- * update observing to be newObserving with unique observables
- * notify observers that become observed/unobserved
- */
-function bindDependencies(derivation) {
-    // invariant(derivation.dependenciesState !== IDerivationState.NOT_TRACKING, "INTERNAL ERROR bindDependencies expects derivation.dependenciesState !== -1");
-    var prevObserving = derivation.observing;
-    var observing = (derivation.observing = derivation.newObserving);
-    var lowestNewObservingDerivationState = IDerivationState.UP_TO_DATE;
-    // Go through all new observables and check diffValue: (this list can contain duplicates):
-    //   0: first occurrence, change to 1 and keep it
-    //   1: extra occurrence, drop it
-    var i0 = 0, l = derivation.unboundDepsCount;
-    for (var i = 0; i < l; i++) {
-        var dep = observing[i];
-        if (dep.diffValue === 0) {
-            dep.diffValue = 1;
-            if (i0 !== i)
-                observing[i0] = dep;
-            i0++;
-        }
-        // Upcast is 'safe' here, because if dep is IObservable, `dependenciesState` will be undefined,
-        // not hitting the condition
-        if (dep.dependenciesState > lowestNewObservingDerivationState) {
-            lowestNewObservingDerivationState = dep.dependenciesState;
-        }
-    }
-    observing.length = i0;
-    derivation.newObserving = null; // newObserving shouldn't be needed outside tracking (statement moved down to work around FF bug, see #614)
-    // Go through all old observables and check diffValue: (it is unique after last bindDependencies)
-    //   0: it's not in new observables, unobserve it
-    //   1: it keeps being observed, don't want to notify it. change to 0
-    l = prevObserving.length;
-    while (l--) {
-        var dep = prevObserving[l];
-        if (dep.diffValue === 0) {
-            removeObserver(dep, derivation);
-        }
-        dep.diffValue = 0;
-    }
-    // Go through all new observables and check diffValue: (now it should be unique)
-    //   0: it was set to 0 in last loop. don't need to do anything.
-    //   1: it wasn't observed, let's observe it. set back to 0
-    while (i0--) {
-        var dep = observing[i0];
-        if (dep.diffValue === 1) {
-            dep.diffValue = 0;
-            addObserver(dep, derivation);
-        }
-    }
-    // Some new observed derivations may become stale during this derivation computation
-    // so they have had no chance to propagate staleness (#916)
-    if (lowestNewObservingDerivationState !== IDerivationState.UP_TO_DATE) {
-        derivation.dependenciesState = lowestNewObservingDerivationState;
-        derivation.onBecomeStale();
-    }
-}
-function clearObserving(derivation) {
-    // invariant(globalState.inBatch > 0, "INTERNAL ERROR clearObserving should be called only inside batch");
-    var obs = derivation.observing;
-    derivation.observing = [];
-    var i = obs.length;
-    while (i--)
-        removeObserver(obs[i], derivation);
-    derivation.dependenciesState = IDerivationState.NOT_TRACKING;
-}
-function untracked(action) {
-    var prev = untrackedStart();
-    try {
-        return action();
-    }
-    finally {
-        untrackedEnd(prev);
-    }
-}
-function untrackedStart() {
-    var prev = globalState.trackingDerivation;
-    globalState.trackingDerivation = null;
-    return prev;
-}
-function untrackedEnd(prev) {
-    globalState.trackingDerivation = prev;
-}
-/**
- * needed to keep `lowestObserverState` correct. when changing from (2 or 1) to 0
- *
- */
-function changeDependenciesStateTo0(derivation) {
-    if (derivation.dependenciesState === IDerivationState.UP_TO_DATE)
-        return;
-    derivation.dependenciesState = IDerivationState.UP_TO_DATE;
-    var obs = derivation.observing;
-    var i = obs.length;
-    while (i--)
-        obs[i].lowestObserverState = IDerivationState.UP_TO_DATE;
-}
-
 /**
  * These values will persist if global state is reset
  */
@@ -1263,6 +1324,9 @@ var persistentKeys = [
     "spyListeners",
     "enforceActions",
     "computedRequiresReaction",
+    "reactionRequiresObservable",
+    "observableRequiresReaction",
+    "allowStateReads",
     "disableErrorBoundaries",
     "runId",
     "UNCHANGED"
@@ -1324,6 +1388,11 @@ var MobXGlobals = /** @class */ (function () {
          */
         this.allowStateChanges = true;
         /**
+         * Is it allowed to read observables at this point?
+         * Used to hold the state needed for `observableRequiresReaction`
+         */
+        this.allowStateReads = true;
+        /**
          * If strict mode is enabled, state changes are by default not allowed
          */
         this.enforceActions = false;
@@ -1340,6 +1409,16 @@ var MobXGlobals = /** @class */ (function () {
          */
         this.computedRequiresReaction = false;
         /**
+         * (Experimental)
+         * Warn if you try to create to derivation / reactive context without accessing any observable.
+         */
+        this.reactionRequiresObservable = false;
+        /**
+         * (Experimental)
+         * Warn if observables are accessed outside a reactive context
+         */
+        this.observableRequiresReaction = false;
+        /**
          * Allows overwriting of computed properties, useful in tests but not prod as it can cause
          * memory leaks. See https://github.com/mobxjs/mobx/issues/1867
          */
@@ -1350,13 +1429,26 @@ var MobXGlobals = /** @class */ (function () {
          */
         this.disableErrorBoundaries = false;
         /*
-         * If true, we are already handling an exception in an action. Any errors in reactions should be supressed, as
+         * If true, we are already handling an exception in an action. Any errors in reactions should be suppressed, as
          * they are not the cause, see: https://github.com/mobxjs/mobx/issues/1836
          */
         this.suppressReactionErrors = false;
     }
     return MobXGlobals;
 }());
+var mockGlobal = {};
+function getGlobal() {
+    if (typeof window !== "undefined") {
+        return window;
+    }
+    if (typeof global !== "undefined") {
+        return global;
+    }
+    if (typeof self !== "undefined") {
+        return self;
+    }
+    return mockGlobal;
+}
 var canMergeGlobalState = true;
 var isolateCalled = false;
 var globalState = (function () {
@@ -1409,9 +1501,6 @@ function resetGlobalState() {
         if (persistentKeys.indexOf(key) === -1)
             globalState[key] = defaultGlobals[key];
     globalState.allowStateChanges = !globalState.enforceActions;
-}
-function getGlobal() {
-    return typeof window !== "undefined" ? window : global;
 }
 
 function hasObservers(observable) {
@@ -1499,6 +1588,7 @@ function endBatch() {
     }
 }
 function reportObserved(observable) {
+    checkIfStateReadsAreAllowed(observable);
     var derivation = globalState.trackingDerivation;
     if (derivation !== null) {
         /**
@@ -1612,11 +1702,13 @@ function printDepTree(tree, lines, depth) {
 }
 
 var Reaction = /** @class */ (function () {
-    function Reaction(name, onInvalidate, errorHandler) {
+    function Reaction(name, onInvalidate, errorHandler, requiresObservable) {
         if (name === void 0) { name = "Reaction@" + getNextId(); }
+        if (requiresObservable === void 0) { requiresObservable = false; }
         this.name = name;
         this.onInvalidate = onInvalidate;
         this.errorHandler = errorHandler;
+        this.requiresObservable = requiresObservable;
         this.observing = []; // nodes we are looking at. Our value depends on these nodes
         this.newObserving = [];
         this.dependenciesState = IDerivationState.NOT_TRACKING;
@@ -1811,13 +1903,13 @@ function spyReport(event) {
         listeners[i](event);
 }
 function spyReportStart(event) {
-    var change = __assign({}, event, { spyReportStart: true });
+    var change = __assign(__assign({}, event), { spyReportStart: true });
     spyReport(change);
 }
 var END_EVENT = { spyReportEnd: true };
 function spyReportEnd(change) {
     if (change)
-        spyReport(__assign({}, change, { spyReportEnd: true }));
+        spyReport(__assign(__assign({}, change), { spyReportEnd: true }));
     else
         spyReport(END_EVENT);
 }
@@ -1969,7 +2061,7 @@ function autorun(view, opts) {
         // normal autorun
         reaction = new Reaction(name, function () {
             this.track(reactionRunner);
-        }, opts.onError);
+        }, opts.onError, opts.requiresObservable);
     }
     else {
         var scheduler_1 = createSchedulerFromOptions(opts);
@@ -1984,7 +2076,7 @@ function autorun(view, opts) {
                         reaction.track(reactionRunner);
                 });
             }
-        }, opts.onError);
+        }, opts.onError, opts.requiresObservable);
     }
     function reactionRunner() {
         view(reaction);
@@ -2024,7 +2116,7 @@ function reaction(expression, effect, opts) {
             isScheduled = true;
             scheduler(reactionRunner);
         }
-    }, opts.onError);
+    }, opts.onError, opts.requiresObservable);
     function reactionRunner() {
         isScheduled = false; // Q: move into reaction runner?
         if (r.isDisposed)
@@ -2063,8 +2155,8 @@ function onBecomeUnobserved(thing, arg2, arg3) {
     return interceptHook("onBecomeUnobserved", thing, arg2, arg3);
 }
 function interceptHook(hook, thing, arg2, arg3) {
-    var atom = typeof arg2 === "string" ? getAtom(thing, arg2) : getAtom(thing);
-    var cb = typeof arg2 === "string" ? arg3 : arg2;
+    var atom = typeof arg3 === "function" ? getAtom(thing, arg2) : getAtom(thing);
+    var cb = typeof arg3 === "function" ? arg3 : arg2;
     var listenersKey = hook + "Listeners";
     if (atom[listenersKey]) {
         atom[listenersKey].add(cb);
@@ -2087,7 +2179,7 @@ function interceptHook(hook, thing, arg2, arg3) {
 }
 
 function configure(options) {
-    var enforceActions = options.enforceActions, computedRequiresReaction = options.computedRequiresReaction, computedConfigurable = options.computedConfigurable, disableErrorBoundaries = options.disableErrorBoundaries, reactionScheduler = options.reactionScheduler;
+    var enforceActions = options.enforceActions, computedRequiresReaction = options.computedRequiresReaction, computedConfigurable = options.computedConfigurable, disableErrorBoundaries = options.disableErrorBoundaries, reactionScheduler = options.reactionScheduler, reactionRequiresObservable = options.reactionRequiresObservable, observableRequiresReaction = options.observableRequiresReaction;
     if (options.isolateGlobalState === true) {
         isolateGlobalState();
     }
@@ -2116,6 +2208,13 @@ function configure(options) {
     }
     if (computedRequiresReaction !== undefined) {
         globalState.computedRequiresReaction = !!computedRequiresReaction;
+    }
+    if (reactionRequiresObservable !== undefined) {
+        globalState.reactionRequiresObservable = !!reactionRequiresObservable;
+    }
+    if (observableRequiresReaction !== undefined) {
+        globalState.observableRequiresReaction = !!observableRequiresReaction;
+        globalState.allowStateReads = !globalState.observableRequiresReaction;
     }
     if (computedConfigurable !== undefined) {
         globalState.computedConfigurable = !!computedConfigurable;
@@ -2199,8 +2298,8 @@ function extendObservableObjectWithProperties(target, properties, decorators, de
                 var key = keys_2_1.value;
                 var descriptor = Object.getOwnPropertyDescriptor(properties, key);
                 if ("development" !== "production") {
-                    if (Object.getOwnPropertyDescriptor(target, key))
-                        fail("'extendObservable' can only be used to introduce new properties. Use 'set' or 'decorate' instead. The property '" + stringifyKey(key) + "' already exists on '" + target + "'");
+                    if (!isPlainObject(properties))
+                        fail("'extendObservabe' only accepts plain objects as second argument");
                     if (isComputed(descriptor.value))
                         fail("Passing a 'computed' as initial property value is no longer supported by extendObservable. Use a getter or decorator instead");
                 }
@@ -2254,9 +2353,16 @@ function nodeToObserverTree(node) {
 }
 
 var generatorId = 0;
+function FlowCancellationError() {
+    this.message = "FLOW_CANCELLED";
+}
+FlowCancellationError.prototype = Object.create(Error.prototype);
+function isFlowCancellationError(error) {
+    return error instanceof FlowCancellationError;
+}
 function flow(generator) {
     if (arguments.length !== 1)
-        fail( "Flow expects one 1 argument and cannot be used as decorator");
+        fail( "Flow expects 1 argument and cannot be used as decorator");
     var name = generator.name || "<unnamed flow>";
     // Implementation based on https://github.com/tj/co/blob/master/index.js
     return function () {
@@ -2309,13 +2415,13 @@ function flow(generator) {
                 if (pendingPromise)
                     cancelPromise(pendingPromise);
                 // Finally block can return (or yield) stuff..
-                var res = gen.return();
+                var res = gen.return(undefined);
                 // eat anything that promise would do, it's cancelled!
                 var yieldedPromise = Promise.resolve(res.value);
                 yieldedPromise.then(noop, noop);
                 cancelPromise(yieldedPromise); // maybe it can be cancelled :)
                 // reject our original promise
-                rejector(new Error("FLOW_CANCELLED"));
+                rejector(new FlowCancellationError());
             }
             catch (e) {
                 rejector(e); // there could be a throwing finally block
@@ -2762,7 +2868,7 @@ function whenPromise(predicate, opts) {
         return fail("the options 'onError' and 'promise' cannot be combined");
     var cancel;
     var res = new Promise(function (resolve, reject) {
-        var disposer = _when(predicate, resolve, __assign({}, opts, { onError: reject }));
+        var disposer = _when(predicate, resolve, __assign(__assign({}, opts), { onError: reject }));
         cancel = function () {
             disposer();
             reject("WHEN_CANCELLED");
@@ -2857,14 +2963,14 @@ function registerInterceptor(interceptable, handler) {
 function interceptChange(interceptable, change) {
     var prevU = untrackedStart();
     try {
-        var interceptors = interceptable.interceptors;
-        if (interceptors)
-            for (var i = 0, l = interceptors.length; i < l; i++) {
-                change = interceptors[i](change);
-                invariant(!change || change.type, "Intercept handlers should return nothing or a change object");
-                if (!change)
-                    break;
-            }
+        // Interceptor can modify the array, copy it to avoid concurrent modification, see #1950
+        var interceptors = __spread((interceptable.interceptors || []));
+        for (var i = 0, l = interceptors.length; i < l; i++) {
+            change = interceptors[i](change);
+            invariant(!change || change.type, "Intercept handlers should return nothing or a change object");
+            if (!change)
+                break;
+        }
         return change;
     }
     finally {
@@ -3079,7 +3185,7 @@ var ObservableArrayAdministration = /** @class */ (function () {
         // The reason why this is on right hand side here (and not above), is this way the uglifier will drop it, but it won't
         // cause any runtime overhead in development mode without NODE_ENV set, unless spying is enabled
         if (notifySpy && "development" !== "production")
-            spyReportStart(__assign({}, change, { name: this.atom.name }));
+            spyReportStart(__assign(__assign({}, change), { name: this.atom.name }));
         this.atom.reportChanged();
         if (notify)
             notifyListeners(this, change);
@@ -3101,7 +3207,7 @@ var ObservableArrayAdministration = /** @class */ (function () {
             }
             : null;
         if (notifySpy && "development" !== "production")
-            spyReportStart(__assign({}, change, { name: this.atom.name }));
+            spyReportStart(__assign(__assign({}, change), { name: this.atom.name }));
         this.atom.reportChanged();
         // conform: https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Array/observe
         if (notify)
@@ -3193,7 +3299,7 @@ var arrayExtensions = {
         // which makes it both a 'derivation' and a 'mutation'.
         // so we deviate from the default and just make it an dervitation
         {
-            console.warn("[mobx] `observableArray.reverse()` will not update the array in place. Use `observableArray.slice().reverse()` to supress this warning and perform the operation on a copy, or `observableArray.replace(observableArray.slice().reverse())` to reverse & update in place");
+            console.warn("[mobx] `observableArray.reverse()` will not update the array in place. Use `observableArray.slice().reverse()` to suppress this warning and perform the operation on a copy, or `observableArray.replace(observableArray.slice().reverse())` to reverse & update in place");
         }
         var clone = this.slice();
         return clone.reverse.apply(clone, arguments);
@@ -3202,7 +3308,7 @@ var arrayExtensions = {
         // sort by default mutates in place before returning the result
         // which goes against all good practices. Let's not change the array in place!
         {
-            console.warn("[mobx] `observableArray.sort()` will not update the array in place. Use `observableArray.slice().sort()` to supress this warning and perform the operation on a copy, or `observableArray.replace(observableArray.slice().sort())` to sort & update in place");
+            console.warn("[mobx] `observableArray.sort()` will not update the array in place. Use `observableArray.slice().sort()` to suppress this warning and perform the operation on a copy, or `observableArray.replace(observableArray.slice().sort())` to sort & update in place");
         }
         var clone = this.slice();
         return clone.sort.apply(clone, arguments);
@@ -3370,7 +3476,7 @@ var ObservableMap = /** @class */ (function () {
                 }
                 : null;
             if (notifySpy && "development" !== "production")
-                spyReportStart(__assign({}, change, { name: this.name, key: key }));
+                spyReportStart(__assign(__assign({}, change), { name: this.name, key: key }));
             transaction(function () {
                 _this._keysAtom.reportChanged();
                 _this._updateHasMapEntry(key, false);
@@ -3408,7 +3514,7 @@ var ObservableMap = /** @class */ (function () {
                 }
                 : null;
             if (notifySpy && "development" !== "production")
-                spyReportStart(__assign({}, change, { name: this.name, key: key }));
+                spyReportStart(__assign(__assign({}, change), { name: this.name, key: key }));
             observable.setNewValue(newValue);
             if (notify)
                 notifyListeners(this, change);
@@ -3437,7 +3543,7 @@ var ObservableMap = /** @class */ (function () {
             }
             : null;
         if (notifySpy && "development" !== "production")
-            spyReportStart(__assign({}, change, { name: this.name, key: key }));
+            spyReportStart(__assign(__assign({}, change), { name: this.name, key: key }));
         if (notify)
             notifyListeners(this, change);
         if (notifySpy && "development" !== "production")
@@ -3491,17 +3597,17 @@ var ObservableMap = /** @class */ (function () {
         return this.entries();
     };
     ObservableMap.prototype.forEach = function (callback, thisArg) {
-        var e_1, _a;
+        var e_1, _b;
         try {
-            for (var _b = __values(this), _c = _b.next(); !_c.done; _c = _b.next()) {
-                var _d = __read(_c.value, 2), key = _d[0], value = _d[1];
+            for (var _c = __values(this), _d = _c.next(); !_d.done; _d = _c.next()) {
+                var _e = __read(_d.value, 2), key = _e[0], value = _e[1];
                 callback.call(thisArg, value, key, this);
             }
         }
         catch (e_1_1) { e_1 = { error: e_1_1 }; }
         finally {
             try {
-                if (_c && !_c.done && (_a = _b.return)) _a.call(_b);
+                if (_d && !_d.done && (_b = _c.return)) _b.call(_c);
             }
             finally { if (e_1) throw e_1.error; }
         }
@@ -3516,8 +3622,8 @@ var ObservableMap = /** @class */ (function () {
             if (isPlainObject(other))
                 getPlainObjectKeys(other).forEach(function (key) { return _this.set(key, other[key]); });
             else if (Array.isArray(other))
-                other.forEach(function (_a) {
-                    var _b = __read(_a, 2), key = _b[0], value = _b[1];
+                other.forEach(function (_b) {
+                    var _c = __read(_b, 2), key = _c[0], value = _c[1];
                     return _this.set(key, value);
                 });
             else if (isES6Map(other)) {
@@ -3534,17 +3640,17 @@ var ObservableMap = /** @class */ (function () {
         var _this = this;
         transaction(function () {
             untracked(function () {
-                var e_2, _a;
+                var e_2, _b;
                 try {
-                    for (var _b = __values(_this.keys()), _c = _b.next(); !_c.done; _c = _b.next()) {
-                        var key = _c.value;
+                    for (var _c = __values(_this.keys()), _d = _c.next(); !_d.done; _d = _c.next()) {
+                        var key = _d.value;
                         _this.delete(key);
                     }
                 }
                 catch (e_2_1) { e_2 = { error: e_2_1 }; }
                 finally {
                     try {
-                        if (_c && !_c.done && (_a = _b.return)) _a.call(_b);
+                        if (_d && !_d.done && (_b = _c.return)) _b.call(_c);
                     }
                     finally { if (e_2) throw e_2.error; }
                 }
@@ -3579,11 +3685,11 @@ var ObservableMap = /** @class */ (function () {
      * If there are duplicating keys after converting them to strings, behaviour is undetermined.
      */
     ObservableMap.prototype.toPOJO = function () {
-        var e_3, _a;
+        var e_3, _b;
         var res = {};
         try {
-            for (var _b = __values(this), _c = _b.next(); !_c.done; _c = _b.next()) {
-                var _d = __read(_c.value, 2), key = _d[0], value = _d[1];
+            for (var _c = __values(this), _d = _c.next(); !_d.done; _d = _c.next()) {
+                var _e = __read(_d.value, 2), key = _e[0], value = _e[1];
                 // We lie about symbol key types due to https://github.com/Microsoft/TypeScript/issues/1863
                 res[typeof key === "symbol" ? key : stringifyKey(key)] = value;
             }
@@ -3591,7 +3697,7 @@ var ObservableMap = /** @class */ (function () {
         catch (e_3_1) { e_3 = { error: e_3_1 }; }
         finally {
             try {
-                if (_c && !_c.done && (_a = _b.return)) _a.call(_b);
+                if (_d && !_d.done && (_b = _c.return)) _b.call(_c);
             }
             finally { if (e_3) throw e_3.error; }
         }
@@ -3664,17 +3770,17 @@ var ObservableSet = /** @class */ (function () {
         var _this = this;
         transaction(function () {
             untracked(function () {
-                var e_1, _a;
+                var e_1, _b;
                 try {
-                    for (var _b = __values(_this._data.values()), _c = _b.next(); !_c.done; _c = _b.next()) {
-                        var value = _c.value;
+                    for (var _c = __values(_this._data.values()), _d = _c.next(); !_d.done; _d = _c.next()) {
+                        var value = _d.value;
                         _this.delete(value);
                     }
                 }
                 catch (e_1_1) { e_1 = { error: e_1_1 }; }
                 finally {
                     try {
-                        if (_c && !_c.done && (_a = _b.return)) _a.call(_b);
+                        if (_d && !_d.done && (_b = _c.return)) _b.call(_c);
                     }
                     finally { if (e_1) throw e_1.error; }
                 }
@@ -3682,17 +3788,17 @@ var ObservableSet = /** @class */ (function () {
         });
     };
     ObservableSet.prototype.forEach = function (callbackFn, thisArg) {
-        var e_2, _a;
+        var e_2, _b;
         try {
-            for (var _b = __values(this), _c = _b.next(); !_c.done; _c = _b.next()) {
-                var value = _c.value;
+            for (var _c = __values(this), _d = _c.next(); !_d.done; _d = _c.next()) {
+                var value = _d.value;
                 callbackFn.call(thisArg, value, value, this);
             }
         }
         catch (e_2_1) { e_2 = { error: e_2_1 }; }
         finally {
             try {
-                if (_c && !_c.done && (_a = _b.return)) _a.call(_b);
+                if (_d && !_d.done && (_b = _c.return)) _b.call(_c);
             }
             finally { if (e_2) throw e_2.error; }
         }
@@ -3764,7 +3870,7 @@ var ObservableSet = /** @class */ (function () {
                 }
                 : null;
             if (notifySpy && "development" !== "production")
-                spyReportStart(__assign({}, change, { name: this.name }));
+                spyReportStart(__assign(__assign({}, change), { name: this.name }));
             transaction(function () {
                 _this._atom.reportChanged();
                 _this._data.delete(value);
@@ -3899,7 +4005,7 @@ var ObservableObjectAdministration = /** @class */ (function () {
                 }
                 : null;
             if (notifySpy && "development" !== "production")
-                spyReportStart(__assign({}, change, { name: this.name, key: key }));
+                spyReportStart(__assign(__assign({}, change), { name: this.name, key: key }));
             observable.setNewValue(newValue);
             if (notify)
                 notifyListeners(this, change);
@@ -3989,7 +4095,7 @@ var ObservableObjectAdministration = /** @class */ (function () {
                 }
                 : null;
             if (notifySpy && "development" !== "production")
-                spyReportStart(__assign({}, change, { name: this.name, key: key }));
+                spyReportStart(__assign(__assign({}, change), { name: this.name, key: key }));
             if (notify)
                 notifyListeners(this, change);
             if (notifySpy && "development" !== "production")
@@ -4046,7 +4152,7 @@ var ObservableObjectAdministration = /** @class */ (function () {
             }
             : null;
         if (notifySpy && "development" !== "production")
-            spyReportStart(__assign({}, change, { name: this.name, key: key }));
+            spyReportStart(__assign(__assign({}, change), { name: this.name, key: key }));
         if (notify)
             notifyListeners(this, change);
         if (notifySpy && "development" !== "production")
@@ -4217,12 +4323,13 @@ function getDebugName(thing, property) {
 }
 
 var toString = Object.prototype.toString;
-function deepEqual(a, b) {
-    return eq(a, b);
+function deepEqual(a, b, depth) {
+    if (depth === void 0) { depth = -1; }
+    return eq(a, b, depth);
 }
 // Copied from https://github.com/jashkenas/underscore/blob/5c237a7c682fb68fd5378203f0bf22dce1624854/underscore.js#L1186-L1289
 // Internal recursive comparison function for `isEqual`.
-function eq(a, b, aStack, bStack) {
+function eq(a, b, depth, aStack, bStack) {
     // Identical objects are equal. `0 === -0`, but they aren't identical.
     // See the [Harmony `egal` proposal](http://wiki.ecmascript.org/doku.php?id=harmony:egal).
     if (a === b)
@@ -4237,13 +4344,6 @@ function eq(a, b, aStack, bStack) {
     var type = typeof a;
     if (type !== "function" && type !== "object" && typeof b != "object")
         return false;
-    return deepEq(a, b, aStack, bStack);
-}
-// Internal recursive comparison function for `isEqual`.
-function deepEq(a, b, aStack, bStack) {
-    // Unwrap any wrapped objects.
-    a = unwrap(a);
-    b = unwrap(b);
     // Compare `[[Class]]` names.
     var className = toString.call(a);
     if (className !== toString.call(b))
@@ -4271,7 +4371,18 @@ function deepEq(a, b, aStack, bStack) {
             return +a === +b;
         case "[object Symbol]":
             return (typeof Symbol !== "undefined" && Symbol.valueOf.call(a) === Symbol.valueOf.call(b));
+        case "[object Map]":
+        case "[object Set]":
+            // Maps and Sets are unwrapped to arrays of entry-pairs, adding an incidental level.
+            // Hide this extra level by increasing the depth.
+            if (depth >= 0) {
+                depth++;
+            }
+            break;
     }
+    // Unwrap any wrapped objects.
+    a = unwrap(a);
+    b = unwrap(b);
     var areArrays = className === "[object Array]";
     if (!areArrays) {
         if (typeof a != "object" || typeof b != "object")
@@ -4287,6 +4398,12 @@ function deepEq(a, b, aStack, bStack) {
             ("constructor" in a && "constructor" in b)) {
             return false;
         }
+    }
+    if (depth === 0) {
+        return false;
+    }
+    else if (depth < 0) {
+        depth = -1;
     }
     // Assume equality for cyclic structures. The algorithm for detecting cyclic
     // structures is adapted from ES 5.1 section 15.12.3, abstract operation `JO`.
@@ -4312,7 +4429,7 @@ function deepEq(a, b, aStack, bStack) {
             return false;
         // Deep compare the contents, ignoring non-numeric properties.
         while (length--) {
-            if (!eq(a[length], b[length], aStack, bStack))
+            if (!eq(a[length], b[length], depth - 1, aStack, bStack))
                 return false;
         }
     }
@@ -4327,7 +4444,7 @@ function deepEq(a, b, aStack, bStack) {
         while (length--) {
             // Deep compare each member
             key = keys[length];
-            if (!(has$1(b, key) && eq(a[key], b[key], aStack, bStack)))
+            if (!(has$1(b, key) && eq(a[key], b[key], depth - 1, aStack, bStack)))
                 return false;
         }
     }
@@ -4350,17 +4467,17 @@ function has$1(a, key) {
 }
 
 function makeIterable(iterator) {
-    iterator[Symbol.iterator] = self;
+    iterator[Symbol.iterator] = getSelf;
     return iterator;
 }
-function self() {
+function getSelf() {
     return this;
 }
 
 /*
 The only reason for this file to exist is pure horror:
 Without it rollup can make the bundling fail at any point in time; when it rolls up the files in the wrong order
-it will cause undefined errors (for example because super classes or local variables not being hosted).
+it will cause undefined errors (for example because super classes or local variables not being hoisted).
 With this file that will still happen,
 but at least in this file we can magically reorder the imports with trial and error until the build succeeds again.
 */
@@ -4392,7 +4509,7 @@ try {
     "development";
 }
 catch (e) {
-    var g = typeof window !== "undefined" ? window : global;
+    var g = getGlobal();
     if (typeof process === "undefined")
         g.process = {};
     g.process.env = {};
@@ -4418,4 +4535,4 @@ if (typeof __MOBX_DEVTOOLS_GLOBAL_HOOK__ === "object") {
     });
 }
 
-export { $mobx, IDerivationState, ObservableMap, ObservableSet, Reaction, allowStateChanges as _allowStateChanges, allowStateChangesInsideComputed as _allowStateChangesInsideComputed, getAdministration as _getAdministration, getGlobalState as _getGlobalState, interceptReads as _interceptReads, isComputingDerivation as _isComputingDerivation, resetGlobalState as _resetGlobalState, action, autorun, comparer, computed, configure, createAtom, decorate, entries, extendObservable, flow, get, getAtom, getDebugName, getDependencyTree, getObserverTree, has, intercept, isAction, isArrayLike, isObservableValue as isBoxedObservable, isComputed, isComputedProp, isObservable, isObservableArray, isObservableMap, isObservableObject, isObservableProp, isObservableSet, keys, observable, observe, onBecomeObserved, onBecomeUnobserved, onReactionError, reaction, remove, runInAction, set, spy, toJS, trace, transaction, untracked, values, when };
+export { $mobx, FlowCancellationError, IDerivationState, ObservableMap, ObservableSet, Reaction, allowStateChanges as _allowStateChanges, allowStateChangesInsideComputed as _allowStateChangesInsideComputed, allowStateReadsEnd as _allowStateReadsEnd, allowStateReadsStart as _allowStateReadsStart, _endAction, getAdministration as _getAdministration, getGlobalState as _getGlobalState, interceptReads as _interceptReads, isComputingDerivation as _isComputingDerivation, resetGlobalState as _resetGlobalState, _startAction, action, autorun, comparer, computed, configure, createAtom, decorate, entries, extendObservable, flow, get, getAtom, getDebugName, getDependencyTree, getObserverTree, has, intercept, isAction, isArrayLike, isObservableValue as isBoxedObservable, isComputed, isComputedProp, isFlowCancellationError, isObservable, isObservableArray, isObservableMap, isObservableObject, isObservableProp, isObservableSet, keys, observable, observe, onBecomeObserved, onBecomeUnobserved, onReactionError, reaction, remove, runInAction, set, spy, toJS, trace, transaction, untracked, values, when };

@@ -13,7 +13,9 @@
   "license": "ISC",
   "dependencies": {
     "@odl/aframe-raycaster-follower-component": "^1.0.11-alpha.0",
-    "mobx": "^5.13.0"
+    "global": "^4.4.0",
+    "mobx": "^5.13.0",
+    "surge": "^0.21.3"
   },
   "devDependencies": {
     "aframe-watcher": "^1.4.0"
