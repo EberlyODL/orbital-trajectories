@@ -4,7 +4,7 @@ AFRAME.registerComponent('cannon-ball',{
 
     window.addEventListener('fire', e => {
       this.el.setAttribute('animate-trajectory', {
-        speed: 1.1
+        speed: 1.9
       })
     })
   }

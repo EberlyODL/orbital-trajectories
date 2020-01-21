@@ -5,12 +5,14 @@
   "main": "drag-rotate-component.js",
   "scripts": {
     "dev": "aframe-watcher",
-    "deploy": "surge -d odl-orbital-trajectories.surge.sh ."
+    "deploy": "surge -d odl-orbital-trajectories.surge.sh .",
+    "postinstall": "npx @pika/web"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "dependencies": {
+    "@odl/aframe-raycaster-follower-component": "^1.0.11-alpha.0",
     "mobx": "^5.13.0"
   },
   "devDependencies": {

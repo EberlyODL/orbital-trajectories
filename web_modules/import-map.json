@@ -1,5 +1,6 @@
 {
   "imports": {
+    "@odl/aframe-raycaster-follower-component": "./@odl/aframe-raycaster-follower-component.js",
     "mobx": "./mobx.js"
   }
 }

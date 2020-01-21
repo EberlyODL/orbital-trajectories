@@ -7,6 +7,8 @@
     <!-- <script src="https://rawgit.com/protyze/aframe-curve-component/master/dist/aframe-curve-component.min.js"></script> -->
     <!-- <script src="https://rawgit.com/protyze/aframe-alongpath-component/master/dist/aframe-alongpath-component.min.js"></script> -->
     <script src="https://unpkg.com/aframe-gltf-part-component/dist/aframe-gltf-part-component.min.js"></script>
+    <script src="https://unpkg.com/aframe-look-at-component@0.8.x/dist/aframe-look-at-component.min.js"></script> 
+    <script src="./web_modules/@odl/aframe-raycaster-follower-component.js"></script>
     <script type="module" src="./app.js"></script>
   </head>
   <body>
@@ -17,6 +19,10 @@
         cursor="rayOrigin: mouse"
       >
         <a-assets>
+          <a-asset-item
+            id="a-hud"
+            src="./assets/hud.gltf"
+          ></a-asset-item>
           <a-asset-item
             id="a-cannonball"
             src="./assets/CannonBall.gltf"
@@ -35,6 +41,12 @@
             scale=""
             gltf-model="#a-scene"
             scene-controller
+          ></a-entity>
+          <a-entity
+            id="hud" rotation="77.28112036504058 97.06764486208841 5.4706010279091" position="-5.57215 4.58912 2.26434"
+            gltf-model="#a-hud"
+            look-at="#camera"
+            hud
           ></a-entity>
           <a-entity
             id="Base_Cannon"
@@ -87,6 +99,7 @@
 
         <!-- Camera -->
         <a-entity
+          id="camera"
           camera
           look-controls="enabled: false"
           orbit-controls="target: 0 0 0; minDistance: 0.5; maxDistance: 180; initialPosition: 0 15 20; enablePan: false;"
@@ -95,6 +108,7 @@
           <a-entity id="light-spot" position="0 0 26.14303"></a-entity>
         </a-entity>
 
+
         <a-entity
           light="color: #BBB; type: ambient"
           data-aframe-default-light=""
@@ -102,7 +116,7 @@
         ></a-entity>
 
         <a-sky color="#000"></a-sky>
-        <!-- <a-entity star-system></a-entity> -->
+        <a-entity star-system></a-entity>
       </a-scene>
     </div>
 
